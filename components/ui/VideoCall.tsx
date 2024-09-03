@@ -88,13 +88,13 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                 if (change.type === 'added') {
                     const data_ = change.doc.data()
                     const data = data_ as docDatafromFirestore
-                    if (data.type != "candidate") {
-                        console.log(data, `Received on snapshot -- ${data.type}`)
-                    }
-                    else {
-                        console.log(`Received on snapshot -- ${data.type}`)
+                    // // if (data.type != "candidate") {
+                    // //     // console.log(data, `Received on snapshot -- ${data.type}`)
+                    // // }
+                    // // else {
+                    // //     // console.log(`Received on snapshot -- ${data.type}`)
 
-                    }
+                    // // }
                     if (data.to == currentUserId) {
                         handleSignalFromFirebase(data as docDatafromFirestore)
 
@@ -261,6 +261,19 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                 // Sets the answer as the remote description. its used in call sender client side when reciever accepts call
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.answer!))
                 console.log('Answer received and set as remote description.')
+                if(rtcPeerConnectionRef.current.getReceivers()){
+                    console.log("THIS MEANS THE ACCEPTER HAS PROPERLY SENT TRACKS")
+                    const remoteStream = new MediaStream();
+                    rtcPeerConnectionRef.current.getReceivers().forEach(receiver=>{
+                        if(receiver.track){
+                            remoteStream.addTrack(receiver.track)
+                    console.log("We are in the endgame now, tracks are added")
+
+                        }
+                        
+                    })
+                    setRemoteStream(remoteStream)
+                }
                 break
             case 'candidate':
                 // set ice candidates of each other for successful peer connection
