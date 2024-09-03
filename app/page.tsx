@@ -5,18 +5,24 @@ import VideoCall from '@/components/ui/VideoCall';
 type Props = {};
 
 function Page({ }: Props) {
- 
+
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [otherId, setOtherId] = useState<string | null>(null);
 
- 
-  useEffect(() => {
-  
-    localStorage.setItem('currentUserId', 'd08e7451-9932-4f79-9a45-c8b1612e192f');
-    localStorage.setItem('otherId', '7f28b8f8-3674-4f68-b8d2-ad44af877ba7');
 
-    const storedCurrentUserId = localStorage.getItem('currentUserId');
-    const storedOtherId = localStorage.getItem('otherId');
+  useEffect(() => {
+    let storedCurrentUserId = localStorage.getItem('currentUserId');
+    let storedOtherId = localStorage.getItem('otherId');
+
+    if (!storedCurrentUserId || !storedOtherId) {
+      localStorage.setItem('currentUserId', 'd08e7451-9932-4f79-9a45-c8b1612e192f');
+      localStorage.setItem('otherId', '7f28b8f8-3674-4f68-b8d2-ad44af877ba7');
+
+      storedCurrentUserId = localStorage.getItem('currentUserId');
+      storedOtherId = localStorage.getItem('otherId');
+
+    }
+
 
     if (storedCurrentUserId) {
       setCurrentUserId(storedCurrentUserId);
