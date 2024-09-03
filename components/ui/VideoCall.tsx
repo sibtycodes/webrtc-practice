@@ -294,7 +294,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
         console.log('Ending call.')
 
         rtcPeerConnectionRef.current?.close()
-        rtcPeerConnectionRef.current = null
+       
         setIsInCall(false)
         setIncomingCall(false)
         setIsCalling(false)
@@ -369,10 +369,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         </div>
                         <div className="flex justify-center space-x-4 mt-6">
                             <Button onClick={toggleMute} variant="outline" className="rounded-full p-3">
-                                {isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
+                                {!isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
                             </Button>
                             <Button onClick={toggleVideo} variant="outline" className="rounded-full p-3">
-                                {isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
+                                {!isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
                             </Button>
                             <Button onClick={endCall} variant="destructive" className="rounded-full p-3">
                                 <PhoneOff className="h-6 w-6" />
