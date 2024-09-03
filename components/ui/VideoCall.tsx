@@ -47,6 +47,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     const [isMuted, setIsMuted] = useState(false)
     const [isVideoOff, setIsVideoOff] = useState(false)
     const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting')
+    const [callAccepted, setcallAccepted] = useState(false)
 
 
     const localVideoRef = useRef<HTMLVideoElement>(null)
@@ -173,7 +174,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
 
 
         try {
-            
+
             // get video audio stream
             const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
             console.log('Local media stream acquired.', stream)
@@ -250,29 +251,48 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.offer!))
                 console.log('Offer received and set as remote description.')
 
-                // the local video and audio details are already in peerConnection
-                const answer = await rtcPeerConnectionRef.current.createAnswer()
-                await rtcPeerConnectionRef.current.setLocalDescription(answer)
-                console.log('Answer created and set as local description.')
+                const waitForAcceptance = new Promise<void>((resolve) => {
+                    setTimeout(() => {
+                        if (!callAccepted) {
+                            // If the call wasn't accepted in time, reset the connection and states
+                            endCall()
+                            console.log("Call not accepted within 10 seconds. Connection reset.");
+                        }
+                        resolve();
+                    }, 10000); // 10 seconds
+                });
 
-                sendSignalDocToFirebase('answer', answer)
+                // Wait for either the user to accept or the timeout
+                await waitForAcceptance;
+                if (callAccepted) {
+                    // the local video and audio details are already in peerConnection
+                    const answer = await rtcPeerConnectionRef.current.createAnswer()
+                    await rtcPeerConnectionRef.current.setLocalDescription(answer)
+                    console.log('Answer created and set as local description.')
+
+                    sendSignalDocToFirebase('answer', answer)
+
+                }
                 break
             case 'answer':
                 // Sets the answer as the remote description. its used in call sender client side when reciever accepts call
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.answer!))
                 console.log('Answer received and set as remote description.')
-                if(rtcPeerConnectionRef.current.getReceivers()){
+                if (rtcPeerConnectionRef.current.getReceivers()) {
                     console.log("THIS MEANS THE ACCEPTER HAS PROPERLY SENT TRACKS")
                     const remoteStream = new MediaStream();
-                    rtcPeerConnectionRef.current.getReceivers().forEach(receiver=>{
-                        if(receiver.track){
+                    rtcPeerConnectionRef.current.getReceivers().forEach(receiver => {
+                        if (receiver.track) {
                             remoteStream.addTrack(receiver.track)
-                    console.log("We are in the endgame now, tracks are added")
+                            console.log("We are in the endgame now, tracks are added", receiver.track)
 
                         }
-                        
+
                     })
                     setRemoteStream(remoteStream)
+                    if (remoteVideoRef.current) {
+                        remoteVideoRef.current.srcObject = remoteStream;
+                    }
                 }
                 break
             case 'candidate':
@@ -306,8 +326,8 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     const endCall = () => {
         console.log('Ending call.')
 
-        rtcPeerConnectionRef.current?.close()
-       
+        // rtcPeerConnectionRef.current?.close()
+
         setIsInCall(false)
         setIncomingCall(false)
         setIsCalling(false)
@@ -360,20 +380,20 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                                 </div>
                             </div>
                             <div className="relative w-full sm:w-1/2">
-                                {remoteStream  ?
+                                {remoteStream ?
                                     <video
                                         autoPlay
                                         playsInline
                                         className="w-full h-64 sm:h-80 object-cover rounded-lg"
                                         ref={remoteVideoRef}
-                                    />:
+                                    /> :
                                     <div className={`absolute top-0 z-50 ${callStatus == "connected" && "hidden"} w-full h-64 sm:h-80 bg-gray-200 rounded-lg flex items-center justify-center`}>
-                                    <p className="text-gray-500">{callStatus === 'connecting' ? 'Connecting...' : 'Call Ended'}</p>
-                                </div>
-                                
+                                        <p className="text-gray-500">{callStatus === 'connecting' ? 'Connecting...' : 'Call Ended'}</p>
+                                    </div>
+
                                 }
 
-                                
+
 
                                 <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded">
                                     Other User
