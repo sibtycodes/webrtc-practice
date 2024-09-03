@@ -7,7 +7,7 @@ import { addDoc, getFirestore} from "firebase/firestore";
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyCEHfdzUfc3rzMdxgAg-Wq4NJ4xrmp66_Q",
+  apiKey: process.env.FIREBASEAPIKEY,
   authDomain: "videobrainboost.firebaseapp.com",
   projectId: "videobrainboost",
   storageBucket: "videobrainboost.appspot.com",
