@@ -62,7 +62,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.log("RTC Initialized")
             createPeerConnection();
         }
-    }, []);
+    }, [rtcPeerConnectionRef]);
     useEffect(() => {
         if (remoteVideoRef.current && remoteStream) {
             console.log("Remote stream added")
@@ -200,9 +200,26 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             sendSignalDocToFirebase('offer', offer)
 
             setCallStatus('connecting')
+            // Set a timeout to handle the case where there's no response to the offer
+            const timeout = setTimeout(() => {
+                if (!rtcPeerConnectionRef.current?.remoteDescription) {
+                    console.log('No response to RTC offer within 10 seconds. Resetting call state.');
+                    endCall()
+
+                }
+            }, 15000); // 10 seconds timeout
+
+            // Clear the timeout if an answer is received before the timeout expires
+            rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
+                if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
+                    clearTimeout(timeout);
+                    console.log('Connection established. Timeout cleared.');
+                }
+            };
         } catch (error) {
             console.error('Error starting call:', error)
             setIsCalling(false)
+            setIsInCall(false)
         }
     }
 
@@ -211,6 +228,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.error('RTCPeerConnection not initialized.');
             return;
         }
+        setcallAccepted(true)
         console.log('Accepting incoming call.')
 
         setIncomingCall(false)
@@ -251,20 +269,18 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.offer!))
                 console.log('Offer received and set as remote description.')
 
-                const waitForAcceptance = new Promise<void>((resolve) => {
-                    setTimeout(() => {
-                        if (!callAccepted) {
-                            // If the call wasn't accepted in time, reset the connection and states
-                            endCall()
-                            console.log("Call not accepted within 10 seconds. Connection reset.");
-                        }
-                        resolve();
-                    }, 10000); // 10 seconds
-                });
+                await new Promise<void>((resolve) => {setTimeout(() =>resolve(), 10000)});
 
                 // Wait for either the user to accept or the timeout
-                await waitForAcceptance;
-                if (callAccepted) {
+                if (!callAccepted) {
+                    console.log(callAccepted,"Call not accepted")
+                    // setcallAccepted(true)
+                    // If the call wasn't accepted in time, reset the connection and states
+                    endCall()
+                    console.log("Call not accepted within 10 seconds. Connection reset.");
+                }
+                
+                else if (callAccepted) {
                     // the local video and audio details are already in peerConnection
                     const answer = await rtcPeerConnectionRef.current.createAnswer()
                     await rtcPeerConnectionRef.current.setLocalDescription(answer)
@@ -333,6 +349,8 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
         setIsCalling(false)
         setCallStatus('ended')
         console.log('Call ended and states reset.')
+
+        rtcPeerConnectionRef.current = null
         // if(localVideoRef.current?.srcObject) { localVideoRef.current?.srcObject = null}
 
         deleteCallsCollectionDocs()
