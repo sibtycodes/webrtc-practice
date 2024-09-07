@@ -99,11 +99,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                     if (data.to == currentUserId) {
                         handleSignalFromFirebase(data as docDatafromFirestore)
 
-                        if (data.type == 'offer') {
-                            setIncomingCall(true)
-                            console.log('Incoming call detected')
-                        }
-                    }
+                                    }
 
                 }
             })
@@ -201,21 +197,32 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
 
             setCallStatus('connecting')
             // Set a timeout to handle the case where there's no response to the offer
+            // Increase timeout to 45 seconds
             const timeout = setTimeout(() => {
                 if (!rtcPeerConnectionRef.current?.remoteDescription) {
-                    console.log('No response to RTC offer within 10 seconds. Resetting call state.');
-                    endCall()
-
+                    console.log('No response to RTC offer within 45 seconds. Resetting call state.');
+                    endCall();
                 }
-            }, 15000); // 10 seconds timeout
+            }, 25000); // 45 seconds timeout
 
-            // Clear the timeout if an answer is received before the timeout expires
-            rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
-                if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
-                    clearTimeout(timeout);
-                    console.log('Connection established. Timeout cleared.');
+            // Clear the timeout if an answer is received
+            const answerReceived = new Promise<void>((resolve) => {
+                if(!rtcPeerConnectionRef.current) {
+                    console.log("RTC Peer Connection not initialized")
                 }
-            };
+                else{
+                    rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
+                        if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
+                            clearTimeout(timeout);
+                            console.log('Connection established. Timeout cleared.');
+                            resolve();
+                        }
+                    };
+                }
+                
+            });
+
+            await Promise.race([answerReceived, new Promise(resolve => setTimeout(resolve, 25000))]);
         } catch (error) {
             console.error('Error starting call:', error)
             setIsCalling(false)
@@ -250,6 +257,11 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
 
             setIsInCall(true)
             setCallStatus('connecting')
+
+            const answer = await rtcPeerConnectionRef.current.createAnswer();
+        await rtcPeerConnectionRef.current.setLocalDescription(answer);
+        console.log('Answer created and set as local description.');
+        sendSignalDocToFirebase('answer', answer);
         } catch (error) {
             console.error('Error accepting call:', error)
         }
@@ -268,54 +280,72 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             case 'offer':
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.offer!))
                 console.log('Offer received and set as remote description.')
+                setIncomingCall(true)
 
-                await new Promise<void>((resolve) => {setTimeout(() =>resolve(), 10000)});
 
-                // Wait for either the user to accept or the timeout
-                if (!callAccepted) {
-                    console.log(callAccepted,"Call not accepted")
-                    // setcallAccepted(true)
-                    // If the call wasn't accepted in time, reset the connection and states
-                    endCall()
-                    console.log("Call not accepted within 10 seconds. Connection reset.");
-                }
-                
-                else if (callAccepted) {
-                    // the local video and audio details are already in peerConnection
-                    const answer = await rtcPeerConnectionRef.current.createAnswer()
-                    await rtcPeerConnectionRef.current.setLocalDescription(answer)
-                    console.log('Answer created and set as local description.')
+                // // Create a promise that resolves when the call is accepted
+                // const callAcceptedPromise = new Promise<void>((resolve) => {
+                //     const checkAccepted = () => {
+                //         if (callAccepted) {
+                //             resolve();
+                //         } else {
+                //             setTimeout(checkAccepted, 500); // Check every 500ms
+                //         }
+                //     };
+                //     checkAccepted();
+                // });
 
-                    sendSignalDocToFirebase('answer', answer)
+                // // Race between the acceptance promise and a timeout
+                // const result = await Promise.race([
+                //     callAcceptedPromise,
+                //     new Promise((_, reject) => setTimeout(() => reject('timeout'), 15000)) // 15 seconds timeout
+                // ]).catch(error => error);
 
-                }
+                // if (result === 'timeout') {
+                //     console.log("Call not accepted within 15 seconds. Connection reset.");
+                //     endCall();
+                // } else {
+                //     // Call was accepted, create and send answer
+                //     const answer = await rtcPeerConnectionRef.current.createAnswer();
+                //     await rtcPeerConnectionRef.current.setLocalDescription(answer);
+                //     console.log('Answer created and set as local description.');
+                //     sendSignalDocToFirebase('answer', answer);
+                // }
                 break
             case 'answer':
                 // Sets the answer as the remote description. its used in call sender client side when reciever accepts call
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.answer!))
                 console.log('Answer received and set as remote description.')
-                if (rtcPeerConnectionRef.current.getReceivers()) {
+                setCallStatus('connected');
+                if (rtcPeerConnectionRef.current.getReceivers().length > 0) {
                     console.log("THIS MEANS THE ACCEPTER HAS PROPERLY SENT TRACKS")
                     const remoteStream = new MediaStream();
                     rtcPeerConnectionRef.current.getReceivers().forEach(receiver => {
                         if (receiver.track) {
                             remoteStream.addTrack(receiver.track)
-                            console.log("We are in the endgame now, tracks are added", receiver.track)
+
 
                         }
 
                     })
                     setRemoteStream(remoteStream)
                     if (remoteVideoRef.current) {
+                        console.log("Remote stream set to video element.")
                         remoteVideoRef.current.srcObject = remoteStream;
                     }
                 }
                 break
             case 'candidate':
                 // set ice candidates of each other for successful peer connection
-                await rtcPeerConnectionRef.current.addIceCandidate(new RTCIceCandidate(deserializeIceCandidate(message.candidate)))
-                console.log('ICE candidate added to RTCPeerConnection:')
+                try {
+                    await rtcPeerConnectionRef.current.addIceCandidate(new RTCIceCandidate(deserializeIceCandidate(message.candidate)));
+                    console.log('ICE candidate added to RTCPeerConnection');
+                } catch (error) {
+                    console.error('Error adding ICE candidate:', error);
+                }
                 break
+            default:
+                console.log("Unknown message type:", message.type)
         }
     }
 
@@ -349,7 +379,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
         setIsCalling(false)
         setCallStatus('ended')
         console.log('Call ended and states reset.')
-
+        rtcPeerConnectionRef.current?.close()
         rtcPeerConnectionRef.current = null
         // if(localVideoRef.current?.srcObject) { localVideoRef.current?.srcObject = null}
 
@@ -387,7 +417,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     return (
         <>
             {(
-                <div className={`${isInCall ? "fixed inset-0 bg-black bg-opacity-50  z-50" : "  opacity-20 -left-[100vw]"} 
+                <div className={`${isInCall ? "fixed inset-0 bg-black bg-opacity-50  z-50" : " -z-10 absolute  opacity-20 -left-[100vw]"} 
                 flex items-center justify-center`}>
                     <div className="bg-white p-6 rounded-lg shadow-lg max-w-4xl w-full">
                         <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
@@ -420,10 +450,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         </div>
                         <div className="flex justify-center space-x-4 mt-6">
                             <Button onClick={toggleMute} variant="outline" className="rounded-full p-3">
-                                {!isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
+                                {isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
                             </Button>
                             <Button onClick={toggleVideo} variant="outline" className="rounded-full p-3">
-                                {!isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
+                                {isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
                             </Button>
                             <Button onClick={endCall} variant="destructive" className="rounded-full p-3">
                                 <PhoneOff className="h-6 w-6" />
