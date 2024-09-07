@@ -2,10 +2,10 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { initializeApp } from 'firebase/app'
-import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, doc, Timestamp, deleteDoc, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, doc, Timestamp, deleteDoc, getDocs, updateDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react'
+import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, AlertCircleIcon, CheckCheckIcon } from 'lucide-react'
 import { db } from '@/lib/firebase'
 // Convert RTCIceCandidate to a plain object
 const serializeIceCandidate = (candidate: RTCIceCandidate): any => {
@@ -26,15 +26,15 @@ const deserializeIceCandidate = (data: any): RTCIceCandidate => {
 
 type docDatafromFirestore = {
     type: 'offer' | 'answer' | 'candidate', // Type of signaling message
-    chatroomId: string,                         // ID of the chatroom
-    from: string,                               // User ID of the sender
-    to: string,                                 // User ID of the receiver
-    offer?: RTCSessionDescriptionInit,          // Offer data (if type is 'offer')
-    answer?: RTCSessionDescriptionInit,         // Answer data (if type is 'answer')
-    candidate?: RTCIceCandidateInit,            // ICE candidate data (if type is 'candidate')
-    timestamp: Timestamp,     // Timestamp when the document was created
+    chatroomId?: string,                    // ID of the chatroom (optional)
+    from?: string,                          // User ID of the sender (optional)
+    to?: string,                            // User ID of the receiver (optional)
+    offer?: RTCSessionDescriptionInit,      // Offer data (if type is 'offer')
+    answer?: RTCSessionDescriptionInit,     // Answer data (if type is 'answer')
+    candidate?: RTCIceCandidateInit,        // ICE candidate data (if type is 'candidate')
+    timestamp?: Timestamp,                  // Timestamp when the document was created (optional)
+    status?: 'declined' | 'ended'           // Call status (optional)
 }
-
 type Props = {
     chatroomId: string
     currentUserId: string
@@ -55,6 +55,12 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const rtcPeerConnectionRef = useRef<RTCPeerConnection | null>(null)
     const [offerTimeoutId, setOfferTimeoutId] = useState<NodeJS.Timeout | null>(null);
+    const [declined, setDeclined] = useState(false)
+    const [callEnded, setCallEnded] = useState(false)
+    const declinedRef = useRef(false);
+    useEffect(() => {
+        declinedRef.current = declined
+    }, [declined])
     useEffect(() => {
         console.log("RTC already Initialized")
 
@@ -71,42 +77,75 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     }, [remoteStream]);
 
     useEffect(() => {
-        console.log('useEffect triggered: Setting up onSnapshot for calls collection.')
+        console.log('useEffect triggered: Setting up onSnapshot for calls document and subcollections.');
 
-        // the query for calls table where chatroom id is this
-        const q = query(
-            collection(db, 'calls'),
-            where('chatroomId', '==', chatroomId),
-            orderBy('timestamp', 'desc')
-        )
+        const callDocRef = doc(db, 'calls', `call-${chatroomId}`);
 
-        /* code below detects changes in calls table amd new doc is added and its type is offer and its sent by someone to 
-        currentuser ,the setincomingcall state to true
-        if type of doc data = 'answer' | 'candidate' and doc is sent to current user then handle the message
-        */
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            snapshot.docChanges().forEach((change) => {
-                if (change.type === 'added') {
-                    const data_ = change.doc.data()
-                    const data = data_ as docDatafromFirestore
-                    // // if (data.type != "candidate") {
-                    // //     // console.log(data, `Received on snapshot -- ${data.type}`)
-                    // // }
-                    // // else {
-                    // //     // console.log(`Received on snapshot -- ${data.type}`)
-
-                    // // }
-                    if (data.to == currentUserId) {
-                        handleSignalFromFirebase(data as docDatafromFirestore)
-
+        const unsubscribeMain = onSnapshot(callDocRef, (docSnapshot) => {
+            if (docSnapshot.exists()) {
+                const data = docSnapshot.data();
+                if (data.status === 'declined' || data.status === 'ended') {
+                    //only change the states if the other person ends the call or declines
+                    if (data.statusfrom === otherId) {
+                        console.log("Declined or ended by", data.statusfrom)
+                        handleCallStatusChange(data.status)
                     }
-
                 }
-            })
-        })
+            }
+        });
 
-        return () => unsubscribe()
-    }, [chatroomId, currentUserId])
+        const unsubscribeOffer = onSnapshot(collection(callDocRef, 'offerRequests'), (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added' && change.doc.data().to === currentUserId) {
+                    const data = change.doc.data();
+                    handleSignalFromFirebase({ type: 'offer', offer: data.payload });
+                }
+            });
+        });
+
+        const unsubscribeAnswer = onSnapshot(collection(callDocRef, 'answerRequests'), (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added' && change.doc.data().to === currentUserId) {
+                    const data = change.doc.data();
+                    handleSignalFromFirebase({ type: 'answer', answer: data.payload });
+                }
+            });
+        });
+
+        const unsubscribeICE = onSnapshot(collection(callDocRef, 'iceCandidates'), (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === 'added' && change.doc.data().to === currentUserId) {
+                    const data = change.doc.data();
+                    handleSignalFromFirebase({ type: 'candidate', candidate: data.payload });
+                }
+            });
+        });
+
+        return () => {
+            unsubscribeMain();
+            unsubscribeOffer();
+            unsubscribeAnswer();
+            unsubscribeICE();
+        };
+    }, [chatroomId, currentUserId]);
+
+    const handleCallStatusChange = (status: 'declined' | 'ended') => {
+        if (status == 'declined') {
+            setDeclined(true)
+            endCall()
+
+
+
+        }
+        else if (status == 'ended') {
+            setCallEnded(true)
+            endCall()
+
+
+
+        }
+    }
+
 
     //? Peer connection created and saved in peerConnection ref
     const createPeerConnection = () => {
@@ -203,29 +242,58 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             // Increase timeout to 45 seconds
             const timeout = setTimeout(() => {
                 if (!rtcPeerConnectionRef.current?.remoteDescription) {
-                    console.log('No response to RTC offer within 45 seconds. Resetting call state.');
-                    endCall();
+                    console.log('No response to RTC offer within 25 seconds. Resetting call state.');
+                    endCall(false, false, true);
                 }
             }, 25000); // 45 seconds timeout
 
             // Clear the timeout if an answer is received
-            const answerReceived = new Promise<void>((resolve) => {
+            // const answerReceived = new Promise<void>((resolve) => {
+            //     if (!rtcPeerConnectionRef.current) {
+            //         console.log("RTC Peer Connection not initialized")
+            //     }
+            //     else {
+            //         //`if declined by other user
+            //         if(declined){
+            //             clearTimeout(timeout)
+            //             resolve()
+            //         }
+            //         rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
+            //             if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
+            //                 clearTimeout(timeout);
+            //                 console.log('Connection established. Timeout cleared.');
+            //                 resolve();
+            //             }
+            //         };
+            //     }
+
+            // });
+            const answerReceived = new Promise<void | string>((resolve) => {
                 if (!rtcPeerConnectionRef.current) {
-                    console.log("RTC Peer Connection not initialized")
-                }
-                else {
-                    rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
-                        if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
+                    console.log("RTC Peer Connection not initialized");
+                    resolve();
+                } else {
+                    const checkState = () => {
+                        if (declinedRef.current) {
+                            clearTimeout(timeout);
+                            console.log('Call declined. Timeout cleared.');
+                            resolve("declined");
+                        } else if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
                             clearTimeout(timeout);
                             console.log('Connection established. Timeout cleared.');
                             resolve();
+                        } else {
+                            setTimeout(checkState, 500); // Check every 500ms
                         }
                     };
+                    checkState();
                 }
-
             });
 
-            await Promise.race([answerReceived, new Promise(resolve => setTimeout(resolve, 25000))]);
+            const result = await Promise.race([answerReceived, new Promise(resolve => setTimeout(resolve, 25000))]);
+            // if (result === "declined") {
+            //     // endCall(false,false,true);
+            // }
         } catch (error) {
             console.error('Error starting call:', error)
             setIsCalling(false)
@@ -277,7 +345,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
         }
     }
 
-    const handleSignalFromFirebase = async (message: docDatafromFirestore) => {
+    const handleSignalFromFirebase = async (message: Partial<docDatafromFirestore>) => {
 
 
         // `Its used on snapshots from firebase
@@ -298,7 +366,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         console.log('Connection not established within 25 seconds. Ending call.')
                         endCall()
                     }
-                }, 25000)
+                }, 22000)
                 setOfferTimeoutId(timeoutId)
 
                 break
@@ -341,26 +409,43 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     }
 
     const sendSignalDocToFirebase = async (type: string, payload: any) => {
-        // console.log('Sending signaling message to Firebase:', { type, payload })
-
         try {
-            const sentDoc = await addDoc(collection(db, 'calls'), {
-                chatroomId,
-                from: currentUserId,
-                to: otherId,
-                type,
-                [type]: payload,
-                timestamp: new Date()
-            })
-            // console.log('Document created in Firebase:', sentDoc)
+            const callDocRef = doc(db, 'calls', `call-${chatroomId}`);
 
+            // Update main call document
+            await setDoc(callDocRef, {
+                lastUpdated: serverTimestamp(),
+                from: currentUserId,
+                to: otherId
+            }, { merge: true });
+
+            // Create or update subcollection based on signal type
+            let subcollectionRef;
+            if (type === 'offer') {
+                subcollectionRef = collection(callDocRef, 'offerRequests');
+            } else if (type === 'answer') {
+                subcollectionRef = collection(callDocRef, 'answerRequests');
+            } else if (type === 'candidate') {
+                subcollectionRef = collection(callDocRef, 'iceCandidates');
+            }
+
+            if (subcollectionRef) {
+                await addDoc(subcollectionRef, {
+                    payload,
+                    timestamp: serverTimestamp(),
+                    from: currentUserId,
+                    to: otherId
+                });
+            }
+
+            console.log(`${type} signal sent to Firebase for chatroom ${chatroomId}`);
         } catch (error) {
-            console.error('Error sending signaling message:', error)
+            console.error('Error sending signaling message:', error);
         }
     }
 
     //? Below function is called if user hangs up or connection is broken
-    const endCall = () => {
+    const endCall = (declined: boolean = false, endedByIcon: boolean = false, missed: boolean = false) => {
         console.log('Ending call.')
 
         // Stop all tracks in the local stream
@@ -375,6 +460,17 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             remoteVideoRef.current.srcObject = null;
         }
 
+
+        if (declined) {
+            updateCallStatus('declined')
+        }
+        else if (endedByIcon) {
+            updateCallStatus('ended')
+        }
+        else if (missed) {
+            updateCallStatus('missed')
+        }
+
         // Clear the remote stream state
         setRemoteStream(null);
 
@@ -385,6 +481,8 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
         setCallStatus('ended')
         setIsMuted(false)
         setIsVideoOff(false)
+        setCallEnded(false)
+        setDeclined(false)
 
         console.log('Call ended and states reset.')
 
@@ -393,13 +491,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             rtcPeerConnectionRef.current.close()
             rtcPeerConnectionRef.current = null
         }
-        updateCallStatus('ended')
-        // Clean up Firebase calls collection
         setTimeout(() => {
-            deleteCallsCollectionDocs()
-        }, 5000)    
-
-        // Trigger peer connection reinitialization
+            //delete call document
+            deleteCallDocument()
+        },5000)
         setNeedToInitializePeerConnection(prev => !prev)
 
     }
@@ -420,39 +515,63 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             ((localVideoRef.current.srcObject as MediaStream).getVideoTracks()[0].enabled = state)
         console.log('Toggled video. Current state:', !state)
     }
-    const deleteCallsCollectionDocs = async () => {
+    // const deleteCallsCollectionDocs = async () => {
+    //     try {
+    //         const callsCollection = collection(db, 'calls')
+    //         const snapshot = await getDocs(callsCollection)
+
+    //         // Loop through each document and delete it
+    //         const deletePromises = snapshot.docs.map(docSnapshot => deleteDoc(doc(db, "calls", docSnapshot.id)))
+    //         await Promise.all(deletePromises)
+
+    //         console.log('All documents in "calls" collection have been deleted.')
+    //     } catch (error) {
+    //         console.error('Error deleting documents:', error)
+    //     }
+    // }
+
+    const updateCallStatus = async (status: 'declined' | 'ended' | 'missed') => {
         try {
-            const callsCollection = collection(db, 'calls')
-            const snapshot = await getDocs(callsCollection)
-
-            // Loop through each document and delete it
-            const deletePromises = snapshot.docs.map(docSnapshot => deleteDoc(doc(db, "calls", docSnapshot.id)))
-            await Promise.all(deletePromises)
-
-            console.log('All documents in "calls" collection have been deleted.')
+            const callDocRef = doc(db, 'calls', `call-${chatroomId}`);
+            await setDoc(callDocRef, {
+                status: status,
+                statusfrom: currentUserId,
+                statusto: otherId,
+                missedBy: otherId,
+                lastUpdated: serverTimestamp()
+            }, { merge: true });
+            console.log(`Call ${status} status updated in Firebase for chatroom ${chatroomId}`);
         } catch (error) {
-            console.error('Error deleting documents:', error)
+            console.error('Error updating call status:', error);
         }
     }
-
-    const updateCallStatus = async (status: 'declined' | 'ended') => {
+    const deleteCallDocument = async () => {
         try {
-          const callDoc = doc(db, 'calls', chatroomId);
-          await updateDoc(callDoc, {
-            status: status,
-            updatedAt: serverTimestamp()
-          });
-          console.log(`Call ${status} status updated in Firebase`);
+            const callDocRef = doc(db, 'calls', `call-${chatroomId}`);
+            await deleteDoc(callDocRef);
+            console.log(`Call document deleted for chatroom ${chatroomId}`);
         } catch (error) {
-          console.error('Error updating call status:', error);
+            console.error('Error deleting call document:', error);
         }
-      }
+    }
 
     return (
         <>
             {(
                 <div className={`${isInCall ? "fixed inset-0 bg-black bg-opacity-50  z-50" : " -z-10 absolute  opacity-20 -left-[100vw]"} 
                 flex items-center justify-center`}>
+                    {
+                        declined && <section className=' z-[60] absolute inset-0 bg-slate-200 bg-opacity-50 flex items-center justify-center'>
+                            <AlertCircleIcon className='h-12 w-12 text-red-800' />
+                            <h1 className='text-red-800 text-2xl font-bold'>Call Declined</h1>
+                        </section>
+                    }
+                    {
+                        callEnded && <section className=' z-[60] absolute inset-0 bg-slate-200 bg-opacity-50 flex items-center justify-center'>
+                            <CheckCheckIcon className='h-12 w-12 text-green-800' />
+                            <h1 className='text-green-800 text-2xl font-bold'>Call Ended</h1>
+                        </section>
+                    }
                     <div className="bg-white p-6 rounded-lg shadow-lg max-w-4xl w-full">
                         <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
                             <div className="relative w-full sm:w-1/2">
@@ -489,7 +608,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                             <Button onClick={toggleVideo} variant="outline" className="rounded-full p-3">
                                 {!isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
                             </Button>
-                            <Button onClick={endCall} variant="destructive" className="rounded-full p-3">
+                            <Button variant="destructive" onClick={() => endCall(false, true)} className="rounded-full p-3">
                                 <PhoneOff className="h-6 w-6" />
                             </Button>
                         </div>
@@ -505,10 +624,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         </DialogDescription>
                     </DialogHeader>
                     <div className="flex justify-end space-x-2">
-                        <Button onClick={() => {
-                            endCall()
-                        }
-                        } variant="outline">
+                        <Button onClick={() => endCall(true)} variant="outline">
                             Decline
                         </Button>
                         <Button onClick={acceptCall}>Accept</Button>
