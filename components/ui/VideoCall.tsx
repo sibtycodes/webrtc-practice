@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { initializeApp } from 'firebase/app'
-import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, doc, Timestamp, deleteDoc, getDocs } from 'firebase/firestore'
+import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, doc, Timestamp, deleteDoc, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react'
@@ -47,14 +47,14 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     const [isMuted, setIsMuted] = useState(false)
     const [isVideoOff, setIsVideoOff] = useState(false)
     const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting')
-    const [callAccepted, setcallAccepted] = useState(false)
+    // const [callAccepted, setcallAccepted] = useState(false)
 
-
+    const [needToInitializePeerConnection, setNeedToInitializePeerConnection] = useState(false)
     const localVideoRef = useRef<HTMLVideoElement>(null)
     const remoteVideoRef = useRef<HTMLVideoElement>(null)
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const rtcPeerConnectionRef = useRef<RTCPeerConnection | null>(null)
-
+    const [offerTimeoutId, setOfferTimeoutId] = useState<NodeJS.Timeout | null>(null);
     useEffect(() => {
         console.log("RTC already Initialized")
 
@@ -62,7 +62,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.log("RTC Initialized")
             createPeerConnection();
         }
-    }, [rtcPeerConnectionRef]);
+    }, [rtcPeerConnectionRef, needToInitializePeerConnection]);
     useEffect(() => {
         if (remoteVideoRef.current && remoteStream) {
             console.log("Remote stream added")
@@ -99,7 +99,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                     if (data.to == currentUserId) {
                         handleSignalFromFirebase(data as docDatafromFirestore)
 
-                                    }
+                    }
 
                 }
             })
@@ -149,8 +149,11 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.log('Connection state changed:', pc.connectionState)
             if (pc.connectionState === 'connected') {
                 setCallStatus('connected')
-            } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            } else if (pc.connectionState == 'disconnected' || pc.connectionState == 'failed' || pc.connectionState == 'closed') {
                 endCall()
+                setCallStatus('ended')
+                setIsInCall(false)
+                setIncomingCall(false)
             }
         }
 
@@ -207,10 +210,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
 
             // Clear the timeout if an answer is received
             const answerReceived = new Promise<void>((resolve) => {
-                if(!rtcPeerConnectionRef.current) {
+                if (!rtcPeerConnectionRef.current) {
                     console.log("RTC Peer Connection not initialized")
                 }
-                else{
+                else {
                     rtcPeerConnectionRef.current.oniceconnectionstatechange = () => {
                         if (rtcPeerConnectionRef.current?.iceConnectionState === 'connected') {
                             clearTimeout(timeout);
@@ -219,7 +222,7 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         }
                     };
                 }
-                
+
             });
 
             await Promise.race([answerReceived, new Promise(resolve => setTimeout(resolve, 25000))]);
@@ -235,8 +238,13 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.error('RTCPeerConnection not initialized.');
             return;
         }
-        setcallAccepted(true)
+
         console.log('Accepting incoming call.')
+        // Clear the offer timeout when the call is accepted
+        if (offerTimeoutId) {
+            clearTimeout(offerTimeoutId)
+            setOfferTimeoutId(null)
+        }
 
         setIncomingCall(false)
 
@@ -259,9 +267,11 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             setCallStatus('connecting')
 
             const answer = await rtcPeerConnectionRef.current.createAnswer();
-        await rtcPeerConnectionRef.current.setLocalDescription(answer);
-        console.log('Answer created and set as local description.');
-        sendSignalDocToFirebase('answer', answer);
+            await rtcPeerConnectionRef.current.setLocalDescription(answer);
+            console.log('Answer created and set as local description.');
+            sendSignalDocToFirebase('answer', answer);
+
+
         } catch (error) {
             console.error('Error accepting call:', error)
         }
@@ -282,37 +292,18 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                 console.log('Offer received and set as remote description.')
                 setIncomingCall(true)
 
+                // Set a 25-second timeout when offer is received
+                const timeoutId = setTimeout(() => {
+                    if (rtcPeerConnectionRef.current?.connectionState !== 'connected') {
+                        console.log('Connection not established within 25 seconds. Ending call.')
+                        endCall()
+                    }
+                }, 25000)
+                setOfferTimeoutId(timeoutId)
 
-                // // Create a promise that resolves when the call is accepted
-                // const callAcceptedPromise = new Promise<void>((resolve) => {
-                //     const checkAccepted = () => {
-                //         if (callAccepted) {
-                //             resolve();
-                //         } else {
-                //             setTimeout(checkAccepted, 500); // Check every 500ms
-                //         }
-                //     };
-                //     checkAccepted();
-                // });
-
-                // // Race between the acceptance promise and a timeout
-                // const result = await Promise.race([
-                //     callAcceptedPromise,
-                //     new Promise((_, reject) => setTimeout(() => reject('timeout'), 15000)) // 15 seconds timeout
-                // ]).catch(error => error);
-
-                // if (result === 'timeout') {
-                //     console.log("Call not accepted within 15 seconds. Connection reset.");
-                //     endCall();
-                // } else {
-                //     // Call was accepted, create and send answer
-                //     const answer = await rtcPeerConnectionRef.current.createAnswer();
-                //     await rtcPeerConnectionRef.current.setLocalDescription(answer);
-                //     console.log('Answer created and set as local description.');
-                //     sendSignalDocToFirebase('answer', answer);
-                // }
                 break
             case 'answer':
+
                 // Sets the answer as the remote description. its used in call sender client side when reciever accepts call
                 await rtcPeerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.answer!))
                 console.log('Answer received and set as remote description.')
@@ -372,33 +363,62 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
     const endCall = () => {
         console.log('Ending call.')
 
-        // rtcPeerConnectionRef.current?.close()
+        // Stop all tracks in the local stream
+        if (localVideoRef.current && localVideoRef.current.srcObject instanceof MediaStream) {
+            localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+            localVideoRef.current.srcObject = null;
+        }
 
+        // Stop all tracks in the remote stream
+        if (remoteVideoRef.current && remoteVideoRef.current.srcObject instanceof MediaStream) {
+            remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+            remoteVideoRef.current.srcObject = null;
+        }
+
+        // Clear the remote stream state
+        setRemoteStream(null);
+
+        // Reset all call-related states
         setIsInCall(false)
         setIncomingCall(false)
         setIsCalling(false)
         setCallStatus('ended')
-        console.log('Call ended and states reset.')
-        rtcPeerConnectionRef.current?.close()
-        rtcPeerConnectionRef.current = null
-        // if(localVideoRef.current?.srcObject) { localVideoRef.current?.srcObject = null}
+        setIsMuted(false)
+        setIsVideoOff(false)
 
-        deleteCallsCollectionDocs()
+        console.log('Call ended and states reset.')
+
+        // Close and nullify the RTCPeerConnection
+        if (rtcPeerConnectionRef.current) {
+            rtcPeerConnectionRef.current.close()
+            rtcPeerConnectionRef.current = null
+        }
+        updateCallStatus('ended')
+        // Clean up Firebase calls collection
+        setTimeout(() => {
+            deleteCallsCollectionDocs()
+        }, 5000)    
+
+        // Trigger peer connection reinitialization
+        setNeedToInitializePeerConnection(prev => !prev)
+
     }
 
     //? used to mute and unmute video and audio by muting and unmuting audio and video stream tracks 
     const toggleMute = () => {
+        const state = isMuted //false
         setIsMuted((prev) => !prev)
         localVideoRef.current?.srcObject &&
-            ((localVideoRef.current.srcObject as MediaStream).getAudioTracks()[0].enabled = !isMuted)
-        console.log('Toggled mute. Current state:', !isMuted)
+            ((localVideoRef.current.srcObject as MediaStream).getAudioTracks()[0].enabled = state)
+        console.log('Toggled mute. Current state:', !state)
     }
 
     const toggleVideo = () => {
+        const state = isVideoOff
         setIsVideoOff((prev) => !prev)
         localVideoRef.current?.srcObject &&
-            ((localVideoRef.current.srcObject as MediaStream).getVideoTracks()[0].enabled = !isVideoOff)
-        console.log('Toggled video. Current state:', !isVideoOff)
+            ((localVideoRef.current.srcObject as MediaStream).getVideoTracks()[0].enabled = state)
+        console.log('Toggled video. Current state:', !state)
     }
     const deleteCallsCollectionDocs = async () => {
         try {
@@ -414,6 +434,20 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
             console.error('Error deleting documents:', error)
         }
     }
+
+    const updateCallStatus = async (status: 'declined' | 'ended') => {
+        try {
+          const callDoc = doc(db, 'calls', chatroomId);
+          await updateDoc(callDoc, {
+            status: status,
+            updatedAt: serverTimestamp()
+          });
+          console.log(`Call ${status} status updated in Firebase`);
+        } catch (error) {
+          console.error('Error updating call status:', error);
+        }
+      }
+
     return (
         <>
             {(
@@ -450,10 +484,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         </div>
                         <div className="flex justify-center space-x-4 mt-6">
                             <Button onClick={toggleMute} variant="outline" className="rounded-full p-3">
-                                {isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
+                                {!isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
                             </Button>
                             <Button onClick={toggleVideo} variant="outline" className="rounded-full p-3">
-                                {isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
+                                {!isVideoOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
                             </Button>
                             <Button onClick={endCall} variant="destructive" className="rounded-full p-3">
                                 <PhoneOff className="h-6 w-6" />
@@ -471,7 +505,10 @@ export default function VideoCall({ chatroomId, currentUserId, otherId }: Props)
                         </DialogDescription>
                     </DialogHeader>
                     <div className="flex justify-end space-x-2">
-                        <Button onClick={() => setIncomingCall(false)} variant="outline">
+                        <Button onClick={() => {
+                            endCall()
+                        }
+                        } variant="outline">
                             Decline
                         </Button>
                         <Button onClick={acceptCall}>Accept</Button>
